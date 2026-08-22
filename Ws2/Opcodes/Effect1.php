@@ -23,7 +23,8 @@ class Effect1 extends AbstractOpcode
         $this->compiledSize = 1 + $channelLen + $nameLen + 4 + 6 * 4 + 2;
         if ($this->updateMode > 0 && $this->version == 1.0) {
             if ($config[3] === 128) {
-                $config[3] = 192;
+                $lastDragType = $this->persistentContainer->get('DragBackgroundLastAlpha');
+                $config[3] = $lastDragType === 6 ? 16 : 192;
             }
         }
 

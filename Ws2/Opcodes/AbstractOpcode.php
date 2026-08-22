@@ -2,6 +2,7 @@
 namespace Ws2\Opcodes;
 
 use Exception;
+use Helper\PersistentContainer;
 use Helper\TextExtractor;
 use Ws2\FilesValidator;
 use Ws2\Reader;
@@ -19,6 +20,7 @@ abstract class AbstractOpcode
     public function __construct(
         protected Reader $reader,
         protected string $version,
+        protected PersistentContainer $persistentContainer,
         protected int $updateMode = 0,
         protected ?TextExtractor $textExtractor = null
     ) {

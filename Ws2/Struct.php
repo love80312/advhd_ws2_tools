@@ -2,6 +2,7 @@
 namespace Ws2;
 
 use Exception;
+use Helper\PersistentContainer;
 use Helper\TextExtractor;
 use Ws2\Opcodes\AbstractOpcode;
 
@@ -24,6 +25,7 @@ class Struct
 
     public function generateScript(float $version, int $updateMode = 0, int $offset = 0): array
     {
+        $persistentData = new PersistentContainer();
         $this->totalSize = $this->data->count();
         $script = [];
         // Only for title.ws2, as it has empty zero offset at the start which could not be read in normal ways
@@ -44,7 +46,7 @@ class Struct
                 $class = $this->opcodesList->getByOpcode($hex);
                 $class = 'Ws2\\Opcodes\\' . $class;
                 /** @var AbstractOpcode $opcode */
-                $opcode = new $class($this->reader, $version, $updateMode, $this->textExtractor);
+                $opcode = new $class($this->reader, $version, $persistentData, $updateMode, $this->textExtractor);
                 $opcode->decompile($this->data);
                 $this->registerLabels($opcode);
                 $script[] = $opcode;

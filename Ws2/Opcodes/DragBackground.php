@@ -15,14 +15,15 @@ class DragBackground extends AbstractOpcode
     public function decompile(\Helper\FastBuffer &$dataSource): self
     {
         [$channel, $channelLen] = $this->reader->readString($dataSource);
-        $config = $this->reader->readData($dataSource, 2);
+        [$dragType, $config] = $this->reader->readData($dataSource, 2);
+        $this->persistentContainer->set('DragBackgroundLastAlpha', $dragType);
         $float1 = $this->reader->readFloat($dataSource);
         $float2 = $this->reader->readFloat($dataSource);
         $float3 = $this->reader->readFloat($dataSource);
         $float4 = $this->reader->readFloat($dataSource);
         $this->compiledSize = 1 + $channelLen + 2 + 4 * 4;
 
-        $this->content = static::FUNC . " ({$channel}, ".implode(', ', $config).", {$float1}, {$float2}, {$float3}, {$float4})";
+        $this->content = static::FUNC . " ({$channel}, {$dragType}, {$config}, {$float1}, {$float2}, {$float3}, {$float4})";
         return $this;
     }
 
