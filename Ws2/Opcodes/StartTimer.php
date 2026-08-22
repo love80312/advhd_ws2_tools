@@ -12,10 +12,14 @@ class StartTimer extends AbstractOpcode
     public function decompile(\Helper\FastBuffer &$dataSource): self
     {
         [$name, $len] = $this->reader->readString($dataSource);
-        $config = $this->reader->readData($dataSource, 2);
-        $this->compiledSize = 1 + $len + 2;
+        $size = 2;
+        if ($this->version > 2.1) {
+            $size ++;
+        }
+        $config = $this->reader->readData($dataSource, $size);
+        $this->compiledSize = 1 + $len + $size;
 
-        $this->content = static::FUNC . " ({$name}, {$config[0]}, {$config[1]})";
+        $this->content = static::FUNC . " ({$name}, ".implode(', ', $config).")";
         return $this;
     }
 
@@ -26,6 +30,9 @@ class StartTimer extends AbstractOpcode
         $this->content = $this->reader->convertHexToChar(static::OPCODE) .
             $this->reader->packString($params[0]) .
             pack('cc', (int)$params[1], (int)$params[2]);
+        if ($this->version > 2.1) {
+            $this->content .= pack('c', (int)$params[3]);
+        }
         return $this;
     }
 }

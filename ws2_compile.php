@@ -11,7 +11,11 @@ if (!$folder || !is_dir($folder)) {
 }
 include_once "class_loader.php";
 
+$config['encoding'] = '';
 $version = (float)$version;
+if ($version > 2) {
+    $config['encoding'] = 'utf16';
+}
 $updateMode = \Helper\Config::$modes[$mode] ?? \Helper\Config::MODE_DEFAULT;
 
 $ignoreFiles = [/*'CG_Achievement.ws2' => 1*/];
@@ -22,7 +26,7 @@ $files = glob($folder . DIRECTORY_SEPARATOR . '*.src');
 
 $opcodesList = new Ws2\OpcodesList();
 $opcodesList->loadList();
-$reader = new Ws2\Reader();
+$reader = new Ws2\Reader($config['encoding']);
 
 foreach ($files as $file) {
     $fileName = explode(DIRECTORY_SEPARATOR, $file);

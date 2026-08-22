@@ -5,6 +5,18 @@ use Exception;
 
 class Reader
 {
+    private ?string $stringMethod = null;
+
+    public function __construct(string $encoding)
+    {
+        $encoding = ucfirst(strtolower($encoding));
+        if ($encoding && !method_exists($this, 'readString'.$encoding)) {
+            echo "Encoding {$this->encoding} is not supported. Either use uft16 or nothing.";
+            exit();
+        }
+        $this->stringMethod = 'readString'.$encoding;
+    }
+
     public function getHex(int $code): string
     {
         $hex = strtoupper(dechex($code));
@@ -39,9 +51,18 @@ class Reader
     public function readString(\Helper\FastBuffer &$dataSource): array
     {
         $initialOffset = $dataSource->offset; // Store initial offset to calculate length
-        $result = $dataSource->readString();
+        if ($this->stringMethod) {
+            $result = $this->readStringUtf16($dataSource);
+        } else {
+            $result = $dataSource->readString();
+        }
         $stringLen = $dataSource->offset - $initialOffset; // Calculate length based on consumed bytes
         return [$result, $stringLen];
+    }
+
+    public function readStringUtf16(\Helper\FastBuffer &$dataSource): string
+    {
+        return $dataSource->read2ByteString();
     }
 
     public function readFloat(\Helper\FastBuffer &$dataSource): float
@@ -92,8 +113,13 @@ class Reader
 
     public function packString(string $text): string
     {
+        $end =  chr(00);
+        if ($this->stringMethod) {
+            $text = mb_convert_encoding($text,  'UTF-16LE','UTF-8');
+            $end = chr(00) . chr(00);
+        }
         $len = strlen($text);
-        return pack('a' . $len, $text) . chr(00);
+        return pack('a' . $len, $text) . $end;
     }
 
     public function packArray(array &$params, string $type, int $count, string $function): string

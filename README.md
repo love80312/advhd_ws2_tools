@@ -16,6 +16,7 @@ Affected games (may require some code adjustments):
 * Nightmare Project (Nightmare x ***)
 * Noble ♡ Butler
 * Ojou-sama wa Gokigen Naname + After
+* Office Love (2026)
 
 The scripts will be tested on "*If My Heart Had Wings: Flight Diary*" new (1.9.* EN) and old (1.3.* JP) versions, "*LoveKami -Healing Harem-*", "*A Sky Full of Stars*" (1.4 JP and 1.9 EN).
 All of the files can be extracted from arc, ws2 files can be unpacked into pseudo code, and the pseudo code can be recompiled to produce files that are exactly the same as they were before. Other games should be ok to extract, but it's possible that compiled scripts may contain some unsupported opcodes. In this case code update is required.

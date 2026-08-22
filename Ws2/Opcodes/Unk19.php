@@ -12,6 +12,9 @@ class Unk19 extends AbstractOpcode
         if ($this->version > 1.4) {
             $size = 3;
         }
+        if ($this->version > 2.1) {
+            $size = 4;
+        }
         $content = $this->reader->readData($dataSource, $size);
         $this->compiledSize = 1 + $size;
         if (empty($content)) {
@@ -27,8 +30,12 @@ class Unk19 extends AbstractOpcode
         $this->content = $this->reader->convertHexToChar(static::OPCODE);
         $this->compiledSize = 1;
         if ($this->version > 1.4) {
-            $this->content .= $this->reader->packArray($params, 'c', 3, 'intval');
-            $this->compiledSize += 3;
+            $count = 3;
+            if ($this->version > 2.1) {
+                $count ++;
+            }
+            $this->content .= $this->reader->packArray($params, 'c', $count, 'intval');
+            $this->compiledSize += $count;
         }
         return $this;
     }

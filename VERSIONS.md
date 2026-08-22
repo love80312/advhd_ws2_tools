@@ -17,3 +17,4 @@
 | ---
 | 2025.04 | Noble ♡ Butler | ? | 1.9
 | --- 
+| 2026.02 | OfficeLove -Cool na Senpai-Kanojo to Himitsu no "Iki-nuki"- | 2.1.1.0 | 2.11

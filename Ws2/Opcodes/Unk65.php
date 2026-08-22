@@ -14,10 +14,14 @@ class Unk65 extends AbstractOpcode
         $config = $this->reader->readData($dataSource, 3);
         $float = $this->reader->readFloat($dataSource);
         $float2 = $this->reader->readFloat($dataSource);
-        $configEnd = $this->reader->readData($dataSource, 2);
-        $this->compiledSize += 1 + 3 + 2*4 + 2;
+        $size = 2;
+        if ($this->version > 2.1) {
+            $size ++;
+        }
+        $configEnd = $this->reader->readData($dataSource, $size);
+        $this->compiledSize += 1 + 3 + 2*4 + $size;
 
-        $this->content = static::FUNC . " (".implode(', ', $config).", {$float}, {$float2}, {$configEnd[0]}, {$configEnd[1]})";
+        $this->content = static::FUNC . " (".implode(', ', $config).", {$float}, {$float2}, ".implode(', ', $configEnd).")";
         return $this;
     }
 
@@ -27,9 +31,15 @@ class Unk65 extends AbstractOpcode
 
         $code = $this->reader->convertHexToChar(static::OPCODE) .
             pack('c3', (int)$params[0], (int)$params[1], (int)$params[2]) .
-            pack('f2', (float)$params[3], (float)$params[4]) .
+            pack('f2', (float)$params[3], (float)$params[4]).
             pack('c2', (int)$params[5], (int)$params[6]);
-        $this->compiledSize = 1 + 3 + 8 + 2;
+        $size = 2;
+        if ($this->version > 2.1) {
+            $code .= pack('c', (int)$params[7]);
+            $size++;
+        }
+
+        $this->compiledSize = 1 + 3 + 8 + $size;
         $this->content = $code;
         return $this;
     }

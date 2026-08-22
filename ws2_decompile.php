@@ -3,7 +3,7 @@ $folder = $argv[1] ?? null;
 $version = $argv[2] ?? '1.9';
 
 if (!$folder || !is_dir($folder)) {
-    echo "Usage: php ws2_decompile.php DIR_TO_UNPACK 1.0|1.06|1.4|1.9";
+    echo "Usage: php ws2_decompile.php DIR_TO_UNPACK 1.0|1.06|1.4|1.9|2.11";
     exit();
 }
 include_once "class_loader.php";
@@ -13,9 +13,13 @@ $options = $extractor->extractParams($argv, [
     new Helper\OptionParam('decrypt', '0', ['d', 'dec']), // 0 / 1
     new Helper\OptionParam('mode', 'default', ['m']), // default / update / debug
     new Helper\OptionParam('text_file', null, ['text', 'file', 't']),
+    new Helper\OptionParam('encoding', null, ['enc', 'e']), // utf16
 ]);
 
 $version = (float)$version;
+if ($version > 2) {
+    $options['encoding'] = 'utf16';
+}
 $updateMode = \Helper\Config::$modes[$options['mode']] ?? \Helper\Config::MODE_DEFAULT;
 
 $isRequireDecrypt = (bool)$options['decrypt'];
@@ -26,7 +30,7 @@ $files = glob($folder . DIRECTORY_SEPARATOR . '*.ws2');
 
 $opcodesList = new Ws2\OpcodesList();
 $opcodesList->loadList();
-$reader = new Ws2\Reader();
+$reader = new Ws2\Reader($options['encoding']);
 $textExtractor = new Helper\TextExtractor($options['text_file']);
 
 // If you want to skip some files, ex: ['title.ws2' => 1]

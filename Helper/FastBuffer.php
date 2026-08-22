@@ -125,6 +125,33 @@ class FastBuffer
     }
 
     /**
+     * Reads a string where each character is encoded in 2-bytes, so null-byte-termination will be double-null-byte
+     *
+     * @return string
+     */
+    public function read2ByteString(): string
+    {
+        $startOffset = $this->offset;
+        $endOffset = $this->offset;
+
+        // Find the null terminator or end of buffer
+        while ($endOffset < $this->length && ($this->buffer[$endOffset] !== 0 || $this->buffer[$endOffset + 1] !== 0)) {
+            $endOffset+=2;
+        }
+        // Extract the relevant portion of the buffer
+        $stringBytes = array_slice($this->buffer, $startOffset, $endOffset - $startOffset);
+
+        // Convert bytes to characters and join them
+        $result = implode('', array_map('chr', $stringBytes));
+
+        // Update the offset to after the null terminator (if found) or end of buffer
+        $this->offset = $endOffset +
+            ($endOffset < $this->length && ($this->buffer[$endOffset] === 0 && $this->buffer[$endOffset + 1] === 0) ? 2 : 0);
+
+        return mb_convert_encoding($result, 'UTF-8', 'UTF-16LE');
+    }
+
+    /**
      * Reads a fixed-length string from the buffer.
      *
      * @param int $length The number of bytes to read.
