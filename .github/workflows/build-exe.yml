@@ -1,7 +1,10 @@
 name: Build Windows x64 Executables
 
 on:
-  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch: # 允許在網頁手動點擊觸發
 
 jobs:
   build:
@@ -11,36 +14,38 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 準備一般 PHP 環境用來執行 Phar 打包
+      # 1. 準備一般的 PHP 環境（僅用於執行後續的 Phar 打包腳本）
       - name: Setup PHP for Phar Packing
         uses: shivammathur/setup-php@v2
         with:
           php-version: '8.2'
           ini-values: phar.readonly=0
 
-      # 下載官方最新的編譯工具 spc (Static PHP CLI)
+      # 2. 下載靜態編譯工具 spc (Static PHP CLI)
       - name: Download Static PHP CLI (spc)
         run: |
           Invoke-WebRequest -Uri "https://github.com/crazywhalecc/static-php-cli/releases/latest/download/spc-windows-x64.exe" -OutFile "spc.exe"
-          
-      # 下載 PHP 8.2 源碼與所需擴展 (mbstring)
+
+      # 3. 自動修復環境、下載 PHP 核心與 mbstring/phar 的依賴庫
       - name: Prepare build environment & fetch PHP sources
         run: |
           .\spc.exe doctor --auto-fix
-          .\spc.exe fetch "mbstring,phar" --with-php=8.2
-          
-      # 在 GitHub 伺服器上直接編譯出 Windows 適用的 micro.sfx (約需 5-10 分鐘)
+          .\spc.exe download php,micro --with-php=8.2
+          .\spc.exe download --for-extensions="mbstring,phar"
+
+      # 4. 在 GitHub 伺服器上編譯出微型 PHP 核心 (micro.sfx)
       - name: Build standalone micro.sfx
         run: |
           .\spc.exe build "mbstring,phar" --build-micro
           Copy-Item "buildroot/bin/micro.sfx" -Destination "micro.sfx"
 
-      # 打包使用者的 PHP 腳本，並與剛編譯好的 micro.sfx 合併為 exe
+      # 5. 打包庫中所有 PHP 檔案為 Phar，並與 micro.sfx 合併成獨立 .exe
       - name: Build Phar and EXE for each tool
         run: |
+          # 專案中所有的主執行腳本
           $scripts = @("ws2_decompile", "ws2_compile", "arc_pack", "pna_merge", "ws2_validate")
           
-          # 建立打包腳本
+          # 建立自動打包成 Phar 的輔助 PHP 腳本
           $pharBuilder = @"
           <?php
           `$script = `$argv[1];
@@ -48,21 +53,21 @@ jobs:
           if (file_exists(`$pharFile)) unlink(`$pharFile);
           
           `$phar = new Phar(`$pharFile);
-          // 遞迴加入目錄下所有的 .php 檔案 (包含 Helper 與 Ws2 依賴目錄)
+          // 遞迴將當前目錄下所有的 .php 檔案 (包含 Ws2/ 與 Helper/) 全部包進來
           `$phar->buildFromDirectory(__DIR__, '/\.php$/');
-          // 設定程式執行入口
+          // 設定進入點
           `$phar->setStub(`$phar->createDefaultStub(`$script . '.php'));
           "@
           Set-Content -Path "build_phar.php" -Value $pharBuilder
 
-          # 依序打包並結合產生單一 .exe
+          # 迴圈處理每一個工具
           foreach ($script in $scripts) {
             Write-Host "Building ${script}.exe..."
             php build_phar.php $script
             cmd /c "copy /b micro.sfx + ${script}.phar ${script}.exe"
           }
 
-      # 輸出打包好的檔案
+      # 6. 上傳編譯好的 .exe 檔案供下載 (Artifacts)
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
