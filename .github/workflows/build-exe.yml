@@ -21,26 +21,32 @@ jobs:
           ini-values: phar.readonly=0
           extensions: mbstring
 
-      - name: Build Phar files for each tool
+      - name: Create build script
         run: |
-          $scripts = @("ws2_decompile", "ws2_compile", "arc_pack", "pna_merge", "ws2_validate")
+          $buildScript = @'
+          <?php
+          $scripts = ["ws2_decompile", "ws2_compile", "arc_pack", "pna_merge", "ws2_validate"];
           
-          foreach ($script in $scripts) {
-            Write-Host "Building ${script}.phar..."
-            $pharFile = "${script}.phar"
-            if (test-path $pharFile) { remove-item $pharFile }
-            
-            $phar = new Phar($pharFile, 0, $pharFile)
-            $phar->startBuffering()
-            
-            # 將專案內所有 .php 檔案與資料夾加入
-            $phar->buildFromDirectory("$PSScriptRoot", '/\.php$/')
-            
-            # 設定執行進入點
-            $stub = "#!/usr/bin/env php" + "`n" + $phar->createDefaultStub("${script}.php")
-            $phar->setStub($stub)
-            $phar->stopBuffering()
+          foreach ($scripts as $script) {
+              $pharFile = $script . '.phar';
+              if (file_exists($pharFile)) {
+                  unlink($pharFile);
+              }
+              
+              echo "Building {$pharFile}...\n";
+              $phar = new Phar($pharFile);
+              $phar->startBuffering();
+              $phar->buildFromDirectory(__DIR__, '/\.php$/');
+              $stub = "#!/usr/bin/env php\n" . $phar->createDefaultStub($script . '.php');
+              $phar->setStub($stub);
+              $phar->stopBuffering();
+              echo "Successfully built {$pharFile}\n";
           }
+          '@
+          Set-Content -Path "make_phar.php" -Value $buildScript
+
+      - name: Run Phar Builder
+        run: php make_phar.php
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
