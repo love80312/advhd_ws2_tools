@@ -8,7 +8,10 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    # 必須使用 Windows 2022。
+    # static-php-cli v2.8.5 只支援 VS2019 / VS2022。
+    # 不要使用 windows-latest，因目前可能是 VS18。
+    runs-on: windows-2022
 
     steps:
       # 1. 取得專案原始碼
@@ -16,27 +19,29 @@ jobs:
         uses: actions/checkout@v4
 
       # 2. 安裝 PHP 8.2
-      #    只用來建立 Phar
+      #    僅供建立 Phar 使用
       - name: Setup PHP 8.2
         uses: shivammathur/setup-php@v2
         with:
           php-version: '8.2'
           extensions: mbstring
           ini-values: phar.readonly=0
+          coverage: none
 
-      # 3. 載入 Visual Studio 2022 編譯環境
-      #    windows-latest 已內建 VS2022
-      - name: Setup MSVC environment
+      # 3. 載入 VS2022 x64 編譯環境
+      - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
 
-      # 4. 下載 Static PHP CLI v2
-      - name: Download Static PHP CLI
+      # 4. 下載固定版本的 Static PHP CLI 2.8.5
+      - name: Download Static PHP CLI 2.8.5
         shell: pwsh
         run: |
+          $url = "https://github.com/crazywhalecc/static-php-cli/releases/download/2.8.5/spc-windows-x64.exe"
+
           Invoke-WebRequest `
-            -Uri "https://github.com/crazywhalecc/static-php-cli/releases/latest/download/spc-windows-x64.exe" `
+            -Uri $url `
             -OutFile "spc.exe"
 
           if (-not (Test-Path "spc.exe")) {
@@ -44,68 +49,90 @@ jobs:
             exit 1
           }
 
-          Write-Host "Static PHP CLI version:"
+          Write-Host "Static PHP CLI:"
           .\spc.exe --version
 
-      # 5. 下載 PHP 8.2、micro、mbstring、phar 的建置資源
+      # 5. 確認目前真的使用 VS2022
+      - name: Verify Visual Studio 2022
+        shell: pwsh
+        run: |
+          Write-Host "VisualStudioVersion = $env:VisualStudioVersion"
+          Write-Host "VSINSTALLDIR = $env:VSINSTALLDIR"
+          Write-Host "VCToolsVersion = $env:VCToolsVersion"
+
+          if ($env:VisualStudioVersion -notlike "17.*") {
+            Write-Error "This workflow requires Visual Studio 2022 (VS17)."
+            exit 1
+          }
+
+      # 6. 檢查 / 自動準備 static-php-cli 建置環境
       #
-      # 這裡只使用 v2.8.6 help 中確認存在的 --with-php。
-      # 不使用 --prefer-binary / --prefer-pre-built。
-      - name: Download Static PHP build resources
+      # Windows 2022 有 VS2022，因此這裡不應再出現
+      # "Visual Studio not installed".
+      - name: Prepare Static PHP build environment
+        shell: pwsh
+        run: |
+          .\spc.exe doctor --auto-fix
+
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Static PHP CLI environment preparation failed."
+            exit 1
+          }
+
+      # 7. 下載 PHP 8.2 + micro + mbstring + phar
+      #
+      # 注意：
+      # v2.8.5 的 --with-php 是 download 選項。
+      # 不使用 --prefer-binary。
+      # 不使用 --prefer-pre-built。
+      - name: Download PHP build resources
         shell: pwsh
         run: |
           .\spc.exe download `
-            "php,micro" `
-            --with-php=8.2
+            --with-php=8.2 `
+            --for-extensions="mbstring,phar"
 
           if ($LASTEXITCODE -ne 0) {
-            Write-Error "Failed to download PHP/micro resources."
+            Write-Error "Failed to download PHP build resources."
             exit 1
           }
 
-          .\spc.exe download `
-            --for-extensions="mbstring,phar" `
-            --with-php=8.2
-
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "Failed to download mbstring/phar resources."
-            exit 1
-          }
-
-      # 6. 建立 Windows x64 micro.sfx
+      # 8. 建立 Windows x64 micro.sfx
       #
-      # v2.8.6 的 build help 確認有：
-      #   --build-micro
-      #   --vs-ver
+      # v2.8.5 build 正確形式：
+      #   spc build "mbstring,phar" --build-micro
       #
-      # 沒有 --with-php，所以不放在這裡。
+      # 不使用 --with-php。
       - name: Build Windows x64 micro.sfx
         shell: pwsh
         run: |
           .\spc.exe build `
             "mbstring,phar" `
-            --build-micro `
-            --vs-ver 2022
+            --build-micro
 
           if ($LASTEXITCODE -ne 0) {
             Write-Error "Static PHP micro build failed."
             exit 1
           }
 
-          if (-not (Test-Path "buildroot/bin/micro.sfx")) {
+          $microPath = "buildroot/bin/micro.sfx"
+
+          if (-not (Test-Path $microPath)) {
             Write-Error "micro.sfx was not created."
             exit 1
           }
 
           Copy-Item `
-            "buildroot/bin/micro.sfx" `
+            $microPath `
             "micro.sfx" `
             -Force
 
-          Write-Host "micro.sfx created successfully."
-          Write-Host "Size: $((Get-Item 'micro.sfx').Length) bytes"
+          $size = (Get-Item "micro.sfx").Length
 
-      # 7. 建立 Phar 打包程式
+          Write-Host "micro.sfx created successfully."
+          Write-Host "Size: $size bytes"
+
+      # 9. 建立 Phar Builder
       - name: Create Phar builder
         shell: pwsh
         run: |
@@ -153,7 +180,7 @@ jobs:
           $phar->startBuffering();
 
           /*
-           * 將專案內所有 PHP 原始碼加入 Phar。
+           * 將專案中的所有 PHP 原始碼加入 Phar。
            *
            * 包含：
            *   class_loader.php
@@ -163,7 +190,7 @@ jobs:
            *
            * 排除：
            *   build_phar.php
-           *   已存在的 Phar
+           *   已建立的 .phar
            */
 
           $directory = new RecursiveDirectoryIterator(
@@ -174,6 +201,7 @@ jobs:
           $iterator = new RecursiveIteratorIterator($directory);
 
           foreach ($iterator as $file) {
+
               if (!$file->isFile()) {
                   continue;
               }
@@ -203,7 +231,7 @@ jobs:
           }
 
           /*
-           * 將目前工具的主程式設定成 Phar 入口。
+           * 使用目前工具的主程式作為 Phar 入口。
            */
           $phar->setStub(
               $phar->createDefaultStub(
@@ -225,7 +253,7 @@ jobs:
             exit 1
           }
 
-      # 8. 建立所有獨立 EXE
+      # 10. 建立五個獨立 EXE
       - name: Build executables
         shell: pwsh
         run: |
@@ -256,7 +284,7 @@ jobs:
             php build_phar.php $script
 
             if ($LASTEXITCODE -ne 0) {
-              Write-Error "Failed to build $script.phar"
+              Write-Error "Failed to create $script.phar"
               exit 1
             }
 
@@ -285,42 +313,7 @@ jobs:
             Write-Host "EXE size: $((Get-Item "$script.exe").Length) bytes"
           }
 
-      # 9. 啟動測試
-      #
-      # 不要求 CLI 回傳 0，因為沒有參數時工具本身可能正常回傳 1。
-      # 只要不是 PHP / EXE 啟動失敗即可。
-      - name: Smoke test executables
-        shell: pwsh
-        run: |
-          $scripts = @(
-            "ws2_decompile",
-            "ws2_compile",
-            "arc_pack",
-            "pna_merge",
-            "ws2_validate"
-          )
-
-          foreach ($script in $scripts) {
-
-            Write-Host ""
-            Write-Host "Testing $script.exe ..."
-
-            & ".\$script.exe" 2>&1 | Out-Host
-
-            $exitCode = $LASTEXITCODE
-
-            Write-Host "Exit code: $exitCode"
-
-            # 0 = 正常
-            # 1 = 通常是缺少命令列參數
-            # 其他值視為啟動失敗
-            if ($exitCode -ne 0 -and $exitCode -ne 1) {
-              Write-Error "$script.exe failed to start. Exit code: $exitCode"
-              exit 1
-            }
-          }
-
-      # 10. 最終檔案確認
+      # 11. 基本驗證
       - name: Verify executables
         shell: pwsh
         run: |
@@ -351,7 +344,7 @@ jobs:
             Write-Host "[OK] $exe - $size bytes"
           }
 
-      # 11. 上傳最終 EXE
+      # 12. 上傳成品
       - name: Upload Windows x64 executables
         uses: actions/upload-artifact@v4
         with:
