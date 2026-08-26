@@ -8,9 +8,8 @@ on:
 
 jobs:
   build:
-    # 必須使用 Windows 2022。
-    # static-php-cli v2.8.5 只支援 VS2019 / VS2022。
-    # 不要使用 windows-latest，因目前可能是 VS18。
+    # static-php-cli v2.8.5 的 Windows builder
+    # 只支援 VS2019 / VS2022。
     runs-on: windows-2022
 
     steps:
@@ -19,7 +18,8 @@ jobs:
         uses: actions/checkout@v4
 
       # 2. 安裝 PHP 8.2
-      #    僅供建立 Phar 使用
+      #    只存在 GitHub Actions runner，
+      #    最終 EXE 不需要 PHP。
       - name: Setup PHP 8.2
         uses: shivammathur/setup-php@v2
         with:
@@ -34,7 +34,7 @@ jobs:
         with:
           arch: x64
 
-      # 4. 下載固定版本的 Static PHP CLI 2.8.5
+      # 4. 下載固定版本 Static PHP CLI
       - name: Download Static PHP CLI 2.8.5
         shell: pwsh
         run: |
@@ -49,42 +49,34 @@ jobs:
             exit 1
           }
 
-          Write-Host "Static PHP CLI:"
+          Write-Host "Static PHP CLI version:"
           .\spc.exe --version
 
-      # 5. 確認目前真的使用 VS2022
+      # 5. 確認 VS2022
       - name: Verify Visual Studio 2022
         shell: pwsh
         run: |
           Write-Host "VisualStudioVersion = $env:VisualStudioVersion"
-          Write-Host "VSINSTALLDIR = $env:VSINSTALLDIR"
-          Write-Host "VCToolsVersion = $env:VCToolsVersion"
+          Write-Host "VCToolsVersion      = $env:VCToolsVersion"
+          Write-Host "VSINSTALLDIR        = $env:VSINSTALLDIR"
 
           if ($env:VisualStudioVersion -notlike "17.*") {
-            Write-Error "This workflow requires Visual Studio 2022 (VS17)."
+            Write-Error "Visual Studio 2022 is required."
             exit 1
           }
 
-      # 6. 檢查 / 自動準備 static-php-cli 建置環境
-      #
-      # Windows 2022 有 VS2022，因此這裡不應再出現
-      # "Visual Studio not installed".
-      - name: Prepare Static PHP build environment
+      # 6. 準備 Static PHP 建置環境
+      - name: Prepare Static PHP environment
         shell: pwsh
         run: |
           .\spc.exe doctor --auto-fix
 
           if ($LASTEXITCODE -ne 0) {
-            Write-Error "Static PHP CLI environment preparation failed."
+            Write-Error "Static PHP environment preparation failed."
             exit 1
           }
 
       # 7. 下載 PHP 8.2 + micro + mbstring + phar
-      #
-      # 注意：
-      # v2.8.5 的 --with-php 是 download 選項。
-      # 不使用 --prefer-binary。
-      # 不使用 --prefer-pre-built。
       - name: Download PHP build resources
         shell: pwsh
         run: |
@@ -97,12 +89,9 @@ jobs:
             exit 1
           }
 
-      # 8. 建立 Windows x64 micro.sfx
+      # 8. 編譯 Windows x64 micro.sfx
       #
-      # v2.8.5 build 正確形式：
-      #   spc build "mbstring,phar" --build-micro
-      #
-      # 不使用 --with-php。
+      # 這裡使用你已經成功的 v2.8.5 語法。
       - name: Build Windows x64 micro.sfx
         shell: pwsh
         run: |
@@ -127,10 +116,8 @@ jobs:
             "micro.sfx" `
             -Force
 
-          $size = (Get-Item "micro.sfx").Length
-
           Write-Host "micro.sfx created successfully."
-          Write-Host "Size: $size bytes"
+          Write-Host "Size: $((Get-Item 'micro.sfx').Length) bytes"
 
       # 9. 建立 Phar Builder
       - name: Create Phar builder
@@ -180,7 +167,7 @@ jobs:
           $phar->startBuffering();
 
           /*
-           * 將專案中的所有 PHP 原始碼加入 Phar。
+           * 將專案所有 PHP 原始碼加入 Phar。
            *
            * 包含：
            *   class_loader.php
@@ -190,7 +177,7 @@ jobs:
            *
            * 排除：
            *   build_phar.php
-           *   已建立的 .phar
+           *   *.phar
            */
 
           $directory = new RecursiveDirectoryIterator(
@@ -231,7 +218,7 @@ jobs:
           }
 
           /*
-           * 使用目前工具的主程式作為 Phar 入口。
+           * 使用目前工具的主 PHP 程式當作 Phar 入口。
            */
           $phar->setStub(
               $phar->createDefaultStub(
@@ -253,7 +240,13 @@ jobs:
             exit 1
           }
 
-      # 10. 建立五個獨立 EXE
+      # 10. 建立 EXE
+      #
+      # 重要：
+      # 不再使用：
+      #   copy /b micro.sfx + xxx.phar xxx.exe
+      #
+      # 改用 Static PHP 官方 micro:combine。
       - name: Build executables
         shell: pwsh
         run: |
@@ -296,11 +289,13 @@ jobs:
             Write-Host "$script.phar created."
             Write-Host "Phar size: $((Get-Item "$script.phar").Length) bytes"
 
-            # 合併 micro.sfx + Phar
-            cmd /c "copy /b micro.sfx + $script.phar $script.exe"
+            # 使用官方 micro:combine
+            .\spc.exe micro:combine `
+              "$script.phar" `
+              -O "$script.exe"
 
             if ($LASTEXITCODE -ne 0) {
-              Write-Error "Failed to combine micro.sfx and $script.phar"
+              Write-Error "micro:combine failed for $script.phar"
               exit 1
             }
 
@@ -313,7 +308,50 @@ jobs:
             Write-Host "EXE size: $((Get-Item "$script.exe").Length) bytes"
           }
 
-      # 11. 基本驗證
+      # 11. 測試命令列參數是否真的傳入 EXE
+      #
+      # 建立一個空資料夾。
+      # ws2_decompile.php 只要收到正確的第一個參數，
+      # 就不應該顯示 Usage。
+      - name: Test command line arguments
+        shell: pwsh
+        run: |
+          $testDir = Join-Path $env:RUNNER_TEMP "ws2-test"
+
+          if (Test-Path $testDir) {
+            Remove-Item $testDir -Recurse -Force
+          }
+
+          New-Item `
+            -ItemType Directory `
+            -Path $testDir `
+            -Force | Out-Null
+
+          Write-Host "Testing ws2_decompile.exe"
+          Write-Host "Test directory: $testDir"
+
+          $output = & ".\ws2_decompile.exe" "$testDir" "1.06" 2>&1
+
+          $exitCode = $LASTEXITCODE
+
+          $output | ForEach-Object {
+            Write-Host $_
+          }
+
+          Write-Host "Exit code: $exitCode"
+
+          $text = ($output | Out-String)
+
+          # 若參數沒有傳入，程式會進入這段 Usage。
+          if ($text -match "Usage: php ws2_decompile\.php") {
+            Write-Error `
+              "Command line arguments were not passed correctly to the bundled PHP application."
+            exit 1
+          }
+
+          Write-Host "Command line argument test passed."
+
+      # 12. 確認全部 EXE
       - name: Verify executables
         shell: pwsh
         run: |
@@ -344,7 +382,7 @@ jobs:
             Write-Host "[OK] $exe - $size bytes"
           }
 
-      # 12. 上傳成品
+      # 13. 上傳最終 Windows x64 EXE
       - name: Upload Windows x64 executables
         uses: actions/upload-artifact@v4
         with:
