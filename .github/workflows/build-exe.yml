@@ -8,6 +8,7 @@ on:
 
 jobs:
   build:
+    # Static PHP CLI v2.8.5 的 Windows builder 需要 VS2019/2022
     runs-on: windows-2022
 
     steps:
@@ -15,8 +16,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. PHP 只存在 GitHub Actions runner
-      #    最終 EXE 不需要 PHP
+      # 2. PHP 8.2 僅存在 GitHub Actions runner
+      #    最終 EXE 不需要安裝 PHP
       - name: Setup PHP 8.2
         uses: shivammathur/setup-php@v2
         with:
@@ -25,13 +26,13 @@ jobs:
           ini-values: phar.readonly=0
           coverage: none
 
-      # 3. 載入 VS2022 x64
+      # 3. 載入 VS2022 x64 編譯環境
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
 
-      # 4. 下載固定版本 Static PHP CLI
+      # 4. 固定使用 Static PHP CLI 2.8.5
       - name: Download Static PHP CLI 2.8.5
         shell: pwsh
         run: |
@@ -62,7 +63,7 @@ jobs:
             exit 1
           }
 
-      # 6. 準備 Static PHP
+      # 6. 準備 Static PHP 建置環境
       - name: Prepare Static PHP environment
         shell: pwsh
         run: |
@@ -86,7 +87,7 @@ jobs:
             exit 1
           }
 
-      # 8. 編譯 Windows x64 micro
+      # 8. 編譯 Windows x64 micro.sfx
       - name: Build Windows x64 micro.sfx
         shell: pwsh
         run: |
@@ -99,35 +100,34 @@ jobs:
             exit 1
           }
 
-          if (-not (Test-Path "buildroot/bin/micro.sfx")) {
+          $microPath = "buildroot/bin/micro.sfx"
+
+          if (-not (Test-Path $microPath)) {
             Write-Error "micro.sfx was not created."
             exit 1
           }
 
           Copy-Item `
-            "buildroot/bin/micro.sfx" `
+            $microPath `
             "micro.sfx" `
             -Force
 
           Write-Host "micro.sfx created successfully."
           Write-Host "Size: $((Get-Item 'micro.sfx').Length) bytes"
 
-      # 9. 修正專案中 Reader 的 PHP 8.x 相容性問題
+      # 9. 修正 ws2_decompile.php 的 PHP 8.x 型別問題
       #
-      # 原始碼：
-      #   public function __construct(string $encoding)
+      # 原始程式：
+      #   $options['encoding'] 預設為 null
+      #   new Ws2\Reader($options['encoding'])
       #
-      # ws2_decompile.php：
-      #   $options['encoding'] 的預設值是 null
+      # Reader::__construct() 要求 string。
       #
-      # 因此在 PHP 8.x 下會直接 TypeError。
-      #
-      # 1.06 / 1.9 等一般模式其實就是「沒有 UTF-16 encoding」，
-      # 所以沒有 --enc 時應使用空字串。
-      - name: Fix Reader encoding compatibility
+      # 只將 null 轉為空字串，不修改 Reader.php。
+      - name: Fix ws2_decompile encoding
         shell: pwsh
         run: |
-          $file = "Ws2/Reader.php"
+          $file = "ws2_decompile.php"
 
           if (-not (Test-Path $file)) {
             Write-Error "Cannot find $file"
@@ -139,38 +139,11 @@ jobs:
             -Raw `
             -Encoding UTF8
 
-          $old = @'
-          public function __construct(string $encoding)
-          {
-              $encoding = ucfirst(strtolower($encoding));
-              if ($encoding && !method_exists($this, 'readString'.$encoding)) {
-                  echo "Encoding {$this->encoding} is not supported. Either use uft16 or nothing.";
-                  exit();
-              }
-              $this->stringMethod = 'readString'.$encoding;
-          }
-          '@
-
-          $new = @'
-          public function __construct(?string $encoding)
-          {
-              $encoding = $encoding
-                  ? ucfirst(strtolower($encoding))
-                  : '';
-
-              if ($encoding && !method_exists($this, 'readString'.$encoding)) {
-                  echo "Encoding {$encoding} is not supported. Either use utf16 or nothing.";
-                  exit();
-              }
-
-              $this->stringMethod = $encoding
-                  ? 'readString'.$encoding
-                  : null;
-          }
-          '@
+          $old = 'new Ws2\Reader($options[''encoding'']);'
+          $new = 'new Ws2\Reader($options[''encoding''] ?? '''');'
 
           if (-not $content.Contains($old)) {
-            Write-Error "Expected Reader constructor was not found. Source may have changed."
+            Write-Error "Expected Reader call was not found in ws2_decompile.php."
             exit 1
           }
 
@@ -182,7 +155,14 @@ jobs:
             -Encoding UTF8 `
             -NoNewline
 
-          Write-Host "Reader.php compatibility fix applied."
+          Write-Host "ws2_decompile.php patched successfully."
+
+          php -l ws2_decompile.php
+
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "ws2_decompile.php syntax check failed."
+            exit 1
+          }
 
       # 10. 建立 Phar Builder
       - name: Create Phar builder
@@ -232,7 +212,7 @@ jobs:
           $phar->startBuffering();
 
           /*
-           * 將專案中的 PHP 原始碼全部加入 Phar。
+           * 將專案內所有 PHP 原始碼加入 Phar。
            *
            * 包含：
            *   class_loader.php
@@ -329,6 +309,7 @@ jobs:
               Remove-Item "$script.exe" -Force
             }
 
+            # 建立 Phar
             php build_phar.php $script
 
             if ($LASTEXITCODE -ne 0) {
@@ -363,11 +344,15 @@ jobs:
             Write-Host "EXE size: $((Get-Item "$script.exe").Length) bytes"
           }
 
-      # 12. 正確測試命令列參數及程式啟動
+      # 12. 真正測試 ws2_decompile.exe
       #
-      # 不再只檢查 Usage。
-      # 如果出現任何 Fatal error / TypeError / Uncaught exception，
-      # 都視為失敗。
+      # 使用空資料夾 + 1.06。
+      # 正常情況：
+      #   不應出現 Fatal error
+      #   不應出現 TypeError
+      #   不應出現 Usage
+      #
+      # 空資料夾沒有 .ws2，所以程式正常結束即可。
       - name: Test ws2_decompile executable
         shell: pwsh
         run: |
@@ -401,30 +386,39 @@ jobs:
 
           Write-Host "Exit code: $exitCode"
 
-          # PHP Fatal / TypeError / Uncaught Exception 都算失敗
-          if (
-              $text -match "Fatal error:" -or
-              $text -match "TypeError:" -or
-              $text -match "Uncaught" -or
-              $text -match "Parse error:" -or
-              $text -match "Error:"
-          ) {
-            Write-Error `
-              "ws2_decompile.exe produced a PHP runtime error."
+          if ($text -match "Fatal error:") {
+            Write-Error "Fatal PHP error detected."
             exit 1
           }
 
-          # 空資料夾的正確結果可以沒有資料可處理，
-          # 但不能出現 Usage。
+          if ($text -match "TypeError:") {
+            Write-Error "PHP TypeError detected."
+            exit 1
+          }
+
+          if ($text -match "Uncaught") {
+            Write-Error "Unhandled PHP exception detected."
+            exit 1
+          }
+
+          if ($text -match "Parse error:") {
+            Write-Error "PHP parse error detected."
+            exit 1
+          }
+
           if ($text -match "Usage: php ws2_decompile\.php") {
-            Write-Error `
-              "Command line arguments were not accepted by ws2_decompile.exe."
+            Write-Error "Command line arguments were not accepted."
             exit 1
           }
 
-          Write-Host "ws2_decompile.exe startup test passed."
+          if ($exitCode -ne 0) {
+            Write-Error "ws2_decompile.exe exited with code $exitCode."
+            exit 1
+          }
 
-      # 13. 確認所有 EXE 存在
+          Write-Host "ws2_decompile.exe test passed."
+
+      # 13. 確認全部 EXE
       - name: Verify executables
         shell: pwsh
         run: |
@@ -455,7 +449,7 @@ jobs:
             Write-Host "[OK] $exe - $size bytes"
           }
 
-      # 14. 上傳最終 Windows x64 EXE
+      # 14. 上傳最終 EXE
       - name: Upload Windows x64 executables
         uses: actions/upload-artifact@v4
         with:
