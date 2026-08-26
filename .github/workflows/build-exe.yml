@@ -16,7 +16,7 @@ jobs:
         uses: actions/checkout@v4
 
       # 2. 安裝 PHP 8.2
-      #    只用來建立 Phar，不是最終執行環境
+      #    僅用於建立 Phar
       - name: Setup PHP 8.2
         uses: shivammathur/setup-php@v2
         with:
@@ -24,12 +24,36 @@ jobs:
           extensions: mbstring
           ini-values: phar.readonly=0
 
-      # 3. 下載 Static PHP CLI
+      # 3. 確認 Windows 編譯環境
+      #    windows-latest 已提供 Visual Studio Build Tools
+      - name: Verify Visual Studio environment
+        shell: pwsh
+        run: |
+          Write-Host "Checking Visual Studio environment..."
+
+          if (Test-Path "${env:ProgramFiles}\Microsoft Visual Studio\2022\Enterprise") {
+            Write-Host "Visual Studio 2022 Enterprise found."
+          }
+          elseif (Test-Path "${env:ProgramFiles}\Microsoft Visual Studio\2022\Professional") {
+            Write-Host "Visual Studio 2022 Professional found."
+          }
+          elseif (Test-Path "${env:ProgramFiles}\Microsoft Visual Studio\2022\Community") {
+            Write-Host "Visual Studio 2022 Community found."
+          }
+          elseif (Test-Path "${env:ProgramFiles}\Microsoft Visual Studio\2022\BuildTools") {
+            Write-Host "Visual Studio 2022 Build Tools found."
+          }
+          else {
+            Write-Host "Visual Studio installation was not detected by path check."
+            Write-Host "Continuing because GitHub windows-latest provides the build environment."
+          }
+
+      # 4. 下載 Static PHP CLI v2
       - name: Download Static PHP CLI
         shell: pwsh
         run: |
           Invoke-WebRequest `
-            -Uri "https://dl.static-php.dev/static-php-cli/spc-bin/nightly/spc-windows-x64.exe" `
+            -Uri "https://github.com/crazywhalecc/static-php-cli/releases/latest/download/spc-windows-x64.exe" `
             -OutFile "spc.exe"
 
           if (-not (Test-Path "spc.exe")) {
@@ -37,25 +61,32 @@ jobs:
             exit 1
           }
 
+          Write-Host "Static PHP CLI:"
           .\spc.exe --version
 
-      # 4. 修復 Static PHP CLI 建置環境
-      - name: Prepare Static PHP environment
-        shell: pwsh
-        run: |
-          .\spc.exe doctor --auto-fix
-
-      # 5. 下載 PHP 8.2 + mbstring + phar 所需檔案
-      - name: Download PHP build dependencies
+      # 5. 下載 PHP 與 micro 建置資源
+      - name: Download PHP build resources
         shell: pwsh
         run: |
           .\spc.exe download `
-            --for-extensions="mbstring,phar" `
-            --with-php=8.2 `
-            --prefer-binary
+            php,micro `
+            --with-php=8.2
 
-      # 6. 建立 Windows x64 的 micro.sfx
-      - name: Build PHP micro.sfx
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Failed to download PHP/micro resources."
+            exit 1
+          }
+
+          .\spc.exe download `
+            --for-extensions="mbstring,phar"
+
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Failed to download extension resources."
+            exit 1
+          }
+
+      # 6. 編譯 Windows x64 micro.sfx
+      - name: Build micro.sfx
         shell: pwsh
         run: |
           .\spc.exe build `
@@ -63,8 +94,13 @@ jobs:
             --build-micro `
             --with-php=8.2
 
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Static PHP micro build failed."
+            exit 1
+          }
+
           if (-not (Test-Path "buildroot/bin/micro.sfx")) {
-            Write-Error "micro.sfx was not created"
+            Write-Error "micro.sfx was not created."
             exit 1
           }
 
@@ -73,9 +109,12 @@ jobs:
             "micro.sfx" `
             -Force
 
-          Write-Host "micro.sfx created successfully."
+          $size = (Get-Item "micro.sfx").Length
 
-      # 7. 建立 Phar 打包程式
+          Write-Host "micro.sfx created successfully."
+          Write-Host "Size: $size bytes"
+
+      # 7. 建立 Phar Builder
       - name: Create Phar builder
         shell: pwsh
         run: |
@@ -83,13 +122,24 @@ jobs:
           <?php
 
           if ($argc < 2) {
-              fwrite(STDERR, "Usage: php build_phar.php SCRIPT_NAME\n");
+              fwrite(
+                  STDERR,
+                  "Usage: php build_phar.php SCRIPT_NAME\n"
+              );
               exit(1);
           }
 
           $script = $argv[1];
-          $entryFile = __DIR__ . DIRECTORY_SEPARATOR . $script . '.php';
-          $pharFile = __DIR__ . DIRECTORY_SEPARATOR . $script . '.phar';
+
+          $entryFile = __DIR__
+              . DIRECTORY_SEPARATOR
+              . $script
+              . '.php';
+
+          $pharFile = __DIR__
+              . DIRECTORY_SEPARATOR
+              . $script
+              . '.phar';
 
           if (!file_exists($entryFile)) {
               fwrite(
@@ -112,17 +162,17 @@ jobs:
           $phar->startBuffering();
 
           /*
-           * 將專案中的 PHP 原始碼全部放入 Phar。
+           * 將專案中的 PHP 原始碼全部加入 Phar。
            *
            * 包含：
            *   Ws2/
            *   Helper/
            *   class_loader.php
-           *   各工具的主程式
+           *   各工具主程式
            *
            * 排除：
            *   build_phar.php
-           *   已存在的 .phar
+           *   .phar
            */
 
           $directory = new RecursiveDirectoryIterator(
@@ -139,31 +189,36 @@ jobs:
               }
 
               $path = $file->getPathname();
-              $relative = substr($path, strlen(__DIR__) + 1);
 
-              // 只加入 PHP 檔案
-              if (!str_ends_with(strtolower($path), '.php')) {
+              if (!str_ends_with(
+                  strtolower($path),
+                  '.php'
+              )) {
                   continue;
               }
 
-              // 不把 Phar builder 本身打包進去
               if (basename($path) === 'build_phar.php') {
                   continue;
               }
 
-              // 避免把舊的 Phar 打進新的 Phar
-              if (str_ends_with(strtolower($path), '.phar')) {
-                  continue;
-              }
+              $relative = substr(
+                  $path,
+                  strlen(__DIR__) + 1
+              );
 
-              $phar->addFile($path, str_replace('\\', '/', $relative));
+              $phar->addFile(
+                  $path,
+                  str_replace('\\', '/', $relative)
+              );
           }
 
           /*
-           * 指定每個工具自己的入口程式。
+           * 設定目前工具的 PHP 主程式為入口。
            */
           $phar->setStub(
-              $phar->createDefaultStub($script . '.php')
+              $phar->createDefaultStub(
+                  $script . '.php'
+              )
           );
 
           $phar->stopBuffering();
@@ -173,7 +228,14 @@ jobs:
                 -Path "build_phar.php" `
                 -Encoding UTF8
 
-      # 8. 建立所有獨立 EXE
+          php -l build_phar.php
+
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "build_phar.php syntax check failed."
+            exit 1
+          }
+
+      # 8. 建立所有 EXE
       - name: Build executables
         shell: pwsh
         run: |
@@ -192,7 +254,7 @@ jobs:
             Write-Host "Building $script.exe"
             Write-Host "========================================"
 
-            # 清除舊檔案
+            # 清除舊檔
             if (Test-Path "$script.phar") {
               Remove-Item "$script.phar" -Force
             }
@@ -204,27 +266,41 @@ jobs:
             # 建立 Phar
             php build_phar.php $script
 
-            if (-not (Test-Path "$script.phar")) {
-              Write-Error "Failed to create $script.phar"
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "Failed to build $script.phar"
               exit 1
             }
 
-            Write-Host "Phar created: $script.phar"
+            if (-not (Test-Path "$script.phar")) {
+              Write-Error "$script.phar was not created."
+              exit 1
+            }
 
-            # 使用 Static PHP CLI 官方方式合併 micro.sfx + Phar
-            .\spc.exe micro:combine `
-              "$script.phar" `
-              -O "$script.exe"
+            $pharSize = (Get-Item "$script.phar").Length
+
+            Write-Host "$script.phar created."
+            Write-Host "Phar size: $pharSize bytes"
+
+            # micro.sfx + Phar
+            cmd /c "copy /b micro.sfx + $script.phar $script.exe"
+
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "Failed to combine micro.sfx and $script.phar"
+              exit 1
+            }
 
             if (-not (Test-Path "$script.exe")) {
-              Write-Error "Failed to create $script.exe"
+              Write-Error "$script.exe was not created."
               exit 1
             }
 
-            Write-Host "EXE created: $script.exe"
+            $exeSize = (Get-Item "$script.exe").Length
+
+            Write-Host "$script.exe created successfully."
+            Write-Host "EXE size: $exeSize bytes"
           }
 
-      # 9. 確認所有 EXE 都存在
+      # 9. 驗證所有 EXE
       - name: Verify executables
         shell: pwsh
         run: |
@@ -237,6 +313,7 @@ jobs:
           )
 
           foreach ($script in $scripts) {
+
             $exe = "$script.exe"
 
             if (-not (Test-Path $exe)) {
@@ -251,10 +328,10 @@ jobs:
               exit 1
             }
 
-            Write-Host "$exe : $size bytes"
+            Write-Host "[OK] $exe - $size bytes"
           }
 
-      # 10. 上傳最終 EXE
+      # 10. 上傳 EXE
       - name: Upload Windows x64 executables
         uses: actions/upload-artifact@v4
         with:
