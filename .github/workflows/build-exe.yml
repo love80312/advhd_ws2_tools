@@ -8,18 +8,15 @@ on:
 
 jobs:
   build:
-    # static-php-cli v2.8.5 的 Windows builder
-    # 只支援 VS2019 / VS2022。
     runs-on: windows-2022
 
     steps:
-      # 1. 取得專案原始碼
+      # 1. 取得原始碼
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. 安裝 PHP 8.2
-      #    只存在 GitHub Actions runner，
-      #    最終 EXE 不需要 PHP。
+      # 2. PHP 只存在 GitHub Actions runner
+      #    最終 EXE 不需要 PHP
       - name: Setup PHP 8.2
         uses: shivammathur/setup-php@v2
         with:
@@ -28,7 +25,7 @@ jobs:
           ini-values: phar.readonly=0
           coverage: none
 
-      # 3. 載入 VS2022 x64 編譯環境
+      # 3. 載入 VS2022 x64
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
         with:
@@ -65,7 +62,7 @@ jobs:
             exit 1
           }
 
-      # 6. 準備 Static PHP 建置環境
+      # 6. 準備 Static PHP
       - name: Prepare Static PHP environment
         shell: pwsh
         run: |
@@ -76,7 +73,7 @@ jobs:
             exit 1
           }
 
-      # 7. 下載 PHP 8.2 + micro + mbstring + phar
+      # 7. 下載 PHP 8.2 + mbstring + phar
       - name: Download PHP build resources
         shell: pwsh
         run: |
@@ -89,9 +86,7 @@ jobs:
             exit 1
           }
 
-      # 8. 編譯 Windows x64 micro.sfx
-      #
-      # 這裡使用你已經成功的 v2.8.5 語法。
+      # 8. 編譯 Windows x64 micro
       - name: Build Windows x64 micro.sfx
         shell: pwsh
         run: |
@@ -104,22 +99,92 @@ jobs:
             exit 1
           }
 
-          $microPath = "buildroot/bin/micro.sfx"
-
-          if (-not (Test-Path $microPath)) {
+          if (-not (Test-Path "buildroot/bin/micro.sfx")) {
             Write-Error "micro.sfx was not created."
             exit 1
           }
 
           Copy-Item `
-            $microPath `
+            "buildroot/bin/micro.sfx" `
             "micro.sfx" `
             -Force
 
           Write-Host "micro.sfx created successfully."
           Write-Host "Size: $((Get-Item 'micro.sfx').Length) bytes"
 
-      # 9. 建立 Phar Builder
+      # 9. 修正專案中 Reader 的 PHP 8.x 相容性問題
+      #
+      # 原始碼：
+      #   public function __construct(string $encoding)
+      #
+      # ws2_decompile.php：
+      #   $options['encoding'] 的預設值是 null
+      #
+      # 因此在 PHP 8.x 下會直接 TypeError。
+      #
+      # 1.06 / 1.9 等一般模式其實就是「沒有 UTF-16 encoding」，
+      # 所以沒有 --enc 時應使用空字串。
+      - name: Fix Reader encoding compatibility
+        shell: pwsh
+        run: |
+          $file = "Ws2/Reader.php"
+
+          if (-not (Test-Path $file)) {
+            Write-Error "Cannot find $file"
+            exit 1
+          }
+
+          $content = Get-Content `
+            -Path $file `
+            -Raw `
+            -Encoding UTF8
+
+          $old = @'
+          public function __construct(string $encoding)
+          {
+              $encoding = ucfirst(strtolower($encoding));
+              if ($encoding && !method_exists($this, 'readString'.$encoding)) {
+                  echo "Encoding {$this->encoding} is not supported. Either use uft16 or nothing.";
+                  exit();
+              }
+              $this->stringMethod = 'readString'.$encoding;
+          }
+          '@
+
+          $new = @'
+          public function __construct(?string $encoding)
+          {
+              $encoding = $encoding
+                  ? ucfirst(strtolower($encoding))
+                  : '';
+
+              if ($encoding && !method_exists($this, 'readString'.$encoding)) {
+                  echo "Encoding {$encoding} is not supported. Either use utf16 or nothing.";
+                  exit();
+              }
+
+              $this->stringMethod = $encoding
+                  ? 'readString'.$encoding
+                  : null;
+          }
+          '@
+
+          if (-not $content.Contains($old)) {
+            Write-Error "Expected Reader constructor was not found. Source may have changed."
+            exit 1
+          }
+
+          $content = $content.Replace($old, $new)
+
+          Set-Content `
+            -Path $file `
+            -Value $content `
+            -Encoding UTF8 `
+            -NoNewline
+
+          Write-Host "Reader.php compatibility fix applied."
+
+      # 10. 建立 Phar Builder
       - name: Create Phar builder
         shell: pwsh
         run: |
@@ -167,7 +232,7 @@ jobs:
           $phar->startBuffering();
 
           /*
-           * 將專案所有 PHP 原始碼加入 Phar。
+           * 將專案中的 PHP 原始碼全部加入 Phar。
            *
            * 包含：
            *   class_loader.php
@@ -217,9 +282,6 @@ jobs:
               );
           }
 
-          /*
-           * 使用目前工具的主 PHP 程式當作 Phar 入口。
-           */
           $phar->setStub(
               $phar->createDefaultStub(
                   $script . '.php'
@@ -240,13 +302,7 @@ jobs:
             exit 1
           }
 
-      # 10. 建立 EXE
-      #
-      # 重要：
-      # 不再使用：
-      #   copy /b micro.sfx + xxx.phar xxx.exe
-      #
-      # 改用 Static PHP 官方 micro:combine。
+      # 11. 建立 EXE
       - name: Build executables
         shell: pwsh
         run: |
@@ -273,7 +329,6 @@ jobs:
               Remove-Item "$script.exe" -Force
             }
 
-            # 建立 Phar
             php build_phar.php $script
 
             if ($LASTEXITCODE -ne 0) {
@@ -289,7 +344,7 @@ jobs:
             Write-Host "$script.phar created."
             Write-Host "Phar size: $((Get-Item "$script.phar").Length) bytes"
 
-            # 使用官方 micro:combine
+            # 使用 Static PHP 官方 micro:combine
             .\spc.exe micro:combine `
               "$script.phar" `
               -O "$script.exe"
@@ -308,18 +363,21 @@ jobs:
             Write-Host "EXE size: $((Get-Item "$script.exe").Length) bytes"
           }
 
-      # 11. 測試命令列參數是否真的傳入 EXE
+      # 12. 正確測試命令列參數及程式啟動
       #
-      # 建立一個空資料夾。
-      # ws2_decompile.php 只要收到正確的第一個參數，
-      # 就不應該顯示 Usage。
-      - name: Test command line arguments
+      # 不再只檢查 Usage。
+      # 如果出現任何 Fatal error / TypeError / Uncaught exception，
+      # 都視為失敗。
+      - name: Test ws2_decompile executable
         shell: pwsh
         run: |
           $testDir = Join-Path $env:RUNNER_TEMP "ws2-test"
 
           if (Test-Path $testDir) {
-            Remove-Item $testDir -Recurse -Force
+            Remove-Item `
+              $testDir `
+              -Recurse `
+              -Force
           }
 
           New-Item `
@@ -330,9 +388,12 @@ jobs:
           Write-Host "Testing ws2_decompile.exe"
           Write-Host "Test directory: $testDir"
 
-          $output = & ".\ws2_decompile.exe" "$testDir" "1.06" 2>&1
+          $output = @(
+            & ".\ws2_decompile.exe" "$testDir" "1.06" 2>&1
+          )
 
           $exitCode = $LASTEXITCODE
+          $text = $output -join "`n"
 
           $output | ForEach-Object {
             Write-Host $_
@@ -340,18 +401,30 @@ jobs:
 
           Write-Host "Exit code: $exitCode"
 
-          $text = ($output | Out-String)
-
-          # 若參數沒有傳入，程式會進入這段 Usage。
-          if ($text -match "Usage: php ws2_decompile\.php") {
+          # PHP Fatal / TypeError / Uncaught Exception 都算失敗
+          if (
+              $text -match "Fatal error:" -or
+              $text -match "TypeError:" -or
+              $text -match "Uncaught" -or
+              $text -match "Parse error:" -or
+              $text -match "Error:"
+          ) {
             Write-Error `
-              "Command line arguments were not passed correctly to the bundled PHP application."
+              "ws2_decompile.exe produced a PHP runtime error."
             exit 1
           }
 
-          Write-Host "Command line argument test passed."
+          # 空資料夾的正確結果可以沒有資料可處理，
+          # 但不能出現 Usage。
+          if ($text -match "Usage: php ws2_decompile\.php") {
+            Write-Error `
+              "Command line arguments were not accepted by ws2_decompile.exe."
+            exit 1
+          }
 
-      # 12. 確認全部 EXE
+          Write-Host "ws2_decompile.exe startup test passed."
+
+      # 13. 確認所有 EXE 存在
       - name: Verify executables
         shell: pwsh
         run: |
@@ -382,7 +455,7 @@ jobs:
             Write-Host "[OK] $exe - $size bytes"
           }
 
-      # 13. 上傳最終 Windows x64 EXE
+      # 14. 上傳最終 Windows x64 EXE
       - name: Upload Windows x64 executables
         uses: actions/upload-artifact@v4
         with:
