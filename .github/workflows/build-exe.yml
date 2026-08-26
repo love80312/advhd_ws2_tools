@@ -1,4 +1,4 @@
-name: Build Windows x64 Phar Tools
+name: Build Windows x64 Executables
 
 on:
   push:
@@ -11,45 +11,258 @@ jobs:
     runs-on: windows-latest
 
     steps:
+      # 1. 取得原始碼
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup PHP
+      # 2. 安裝 PHP 8.2
+      #    只用來建立 Phar，不是最終執行環境
+      - name: Setup PHP 8.2
         uses: shivammathur/setup-php@v2
         with:
           php-version: '8.2'
-          ini-values: phar.readonly=0
           extensions: mbstring
+          ini-values: phar.readonly=0
 
-      - name: Create build script
+      # 3. 下載 Static PHP CLI
+      - name: Download Static PHP CLI
+        shell: pwsh
         run: |
-          $buildScript = @'
-          <?php
-          $scripts = ["ws2_decompile", "ws2_compile", "arc_pack", "pna_merge", "ws2_validate"];
-          
-          foreach ($scripts as $script) {
-              $pharFile = $script . '.phar';
-              if (file_exists($pharFile)) {
-                  unlink($pharFile);
-              }
-              
-              echo "Building {$pharFile}...\n";
-              $phar = new Phar($pharFile);
-              $phar->startBuffering();
-              $phar->buildFromDirectory(__DIR__, '/\.php$/');
-              $stub = "#!/usr/bin/env php\n" . $phar->createDefaultStub($script . '.php');
-              $phar->setStub($stub);
-              $phar->stopBuffering();
-              echo "Successfully built {$pharFile}\n";
+          Invoke-WebRequest `
+            -Uri "https://dl.static-php.dev/static-php-cli/spc-bin/nightly/spc-windows-x64.exe" `
+            -OutFile "spc.exe"
+
+          if (-not (Test-Path "spc.exe")) {
+            Write-Error "Failed to download spc.exe"
+            exit 1
           }
-          '@
-          Set-Content -Path "make_phar.php" -Value $buildScript
 
-      - name: Run Phar Builder
-        run: php make_phar.php
+          .\spc.exe --version
 
-      - name: Upload Artifacts
+      # 4. 修復 Static PHP CLI 建置環境
+      - name: Prepare Static PHP environment
+        shell: pwsh
+        run: |
+          .\spc.exe doctor --auto-fix
+
+      # 5. 下載 PHP 8.2 + mbstring + phar 所需檔案
+      - name: Download PHP build dependencies
+        shell: pwsh
+        run: |
+          .\spc.exe download `
+            --for-extensions="mbstring,phar" `
+            --with-php=8.2 `
+            --prefer-binary
+
+      # 6. 建立 Windows x64 的 micro.sfx
+      - name: Build PHP micro.sfx
+        shell: pwsh
+        run: |
+          .\spc.exe build `
+            "mbstring,phar" `
+            --build-micro `
+            --with-php=8.2
+
+          if (-not (Test-Path "buildroot/bin/micro.sfx")) {
+            Write-Error "micro.sfx was not created"
+            exit 1
+          }
+
+          Copy-Item `
+            "buildroot/bin/micro.sfx" `
+            "micro.sfx" `
+            -Force
+
+          Write-Host "micro.sfx created successfully."
+
+      # 7. 建立 Phar 打包程式
+      - name: Create Phar builder
+        shell: pwsh
+        run: |
+          @'
+          <?php
+
+          if ($argc < 2) {
+              fwrite(STDERR, "Usage: php build_phar.php SCRIPT_NAME\n");
+              exit(1);
+          }
+
+          $script = $argv[1];
+          $entryFile = __DIR__ . DIRECTORY_SEPARATOR . $script . '.php';
+          $pharFile = __DIR__ . DIRECTORY_SEPARATOR . $script . '.phar';
+
+          if (!file_exists($entryFile)) {
+              fwrite(
+                  STDERR,
+                  "Entry script not found: {$entryFile}\n"
+              );
+              exit(1);
+          }
+
+          if (file_exists($pharFile)) {
+              unlink($pharFile);
+          }
+
+          $phar = new Phar(
+              $pharFile,
+              0,
+              $script . '.phar'
+          );
+
+          $phar->startBuffering();
+
+          /*
+           * 將專案中的 PHP 原始碼全部放入 Phar。
+           *
+           * 包含：
+           *   Ws2/
+           *   Helper/
+           *   class_loader.php
+           *   各工具的主程式
+           *
+           * 排除：
+           *   build_phar.php
+           *   已存在的 .phar
+           */
+
+          $directory = new RecursiveDirectoryIterator(
+              __DIR__,
+              FilesystemIterator::SKIP_DOTS
+          );
+
+          $iterator = new RecursiveIteratorIterator($directory);
+
+          foreach ($iterator as $file) {
+
+              if (!$file->isFile()) {
+                  continue;
+              }
+
+              $path = $file->getPathname();
+              $relative = substr($path, strlen(__DIR__) + 1);
+
+              // 只加入 PHP 檔案
+              if (!str_ends_with(strtolower($path), '.php')) {
+                  continue;
+              }
+
+              // 不把 Phar builder 本身打包進去
+              if (basename($path) === 'build_phar.php') {
+                  continue;
+              }
+
+              // 避免把舊的 Phar 打進新的 Phar
+              if (str_ends_with(strtolower($path), '.phar')) {
+                  continue;
+              }
+
+              $phar->addFile($path, str_replace('\\', '/', $relative));
+          }
+
+          /*
+           * 指定每個工具自己的入口程式。
+           */
+          $phar->setStub(
+              $phar->createDefaultStub($script . '.php')
+          );
+
+          $phar->stopBuffering();
+
+          echo "Created {$pharFile}\n";
+          '@ | Set-Content `
+                -Path "build_phar.php" `
+                -Encoding UTF8
+
+      # 8. 建立所有獨立 EXE
+      - name: Build executables
+        shell: pwsh
+        run: |
+          $scripts = @(
+            "ws2_decompile",
+            "ws2_compile",
+            "arc_pack",
+            "pna_merge",
+            "ws2_validate"
+          )
+
+          foreach ($script in $scripts) {
+
+            Write-Host ""
+            Write-Host "========================================"
+            Write-Host "Building $script.exe"
+            Write-Host "========================================"
+
+            # 清除舊檔案
+            if (Test-Path "$script.phar") {
+              Remove-Item "$script.phar" -Force
+            }
+
+            if (Test-Path "$script.exe") {
+              Remove-Item "$script.exe" -Force
+            }
+
+            # 建立 Phar
+            php build_phar.php $script
+
+            if (-not (Test-Path "$script.phar")) {
+              Write-Error "Failed to create $script.phar"
+              exit 1
+            }
+
+            Write-Host "Phar created: $script.phar"
+
+            # 使用 Static PHP CLI 官方方式合併 micro.sfx + Phar
+            .\spc.exe micro:combine `
+              "$script.phar" `
+              -O "$script.exe"
+
+            if (-not (Test-Path "$script.exe")) {
+              Write-Error "Failed to create $script.exe"
+              exit 1
+            }
+
+            Write-Host "EXE created: $script.exe"
+          }
+
+      # 9. 確認所有 EXE 都存在
+      - name: Verify executables
+        shell: pwsh
+        run: |
+          $scripts = @(
+            "ws2_decompile",
+            "ws2_compile",
+            "arc_pack",
+            "pna_merge",
+            "ws2_validate"
+          )
+
+          foreach ($script in $scripts) {
+            $exe = "$script.exe"
+
+            if (-not (Test-Path $exe)) {
+              Write-Error "Missing $exe"
+              exit 1
+            }
+
+            $size = (Get-Item $exe).Length
+
+            if ($size -le 0) {
+              Write-Error "$exe is empty"
+              exit 1
+            }
+
+            Write-Host "$exe : $size bytes"
+          }
+
+      # 10. 上傳最終 EXE
+      - name: Upload Windows x64 executables
         uses: actions/upload-artifact@v4
         with:
-          name: advhd_ws2_tools_phar
-          path: '*.phar'
+          name: advhd_ws2_tools_win64
+          path: |
+            ws2_decompile.exe
+            ws2_compile.exe
+            arc_pack.exe
+            pna_merge.exe
+            ws2_validate.exe
+          if-no-files-found: error
